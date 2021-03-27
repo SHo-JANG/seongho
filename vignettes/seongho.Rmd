@@ -1,0 +1,2176 @@
+---
+title: "seongho"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{seongho}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+## ADP 
+**CODE**
+```{r setup}
+library(seongho)
+```
+
+
+```{r}
+
+library(TSstudio)
+data(USgas)
+ts_plot(USgas)
+USgas
+ts_decompose(USgas)
+ts_seasonal(USgas,type="all")
+ts_heatmap(USgas)
+# ACF and PACF plots
+ts_cor(USgas, lag.max = 60)
+# Lags plot
+ts_lags(USgas, lags = 1:12)
+# Seasonal lags plot
+ts_lags(USgas, lags = c(12, 24, 36, 48))
+
+
+# Forecasting applications
+# Setting training and testing partitions
+USgas_s <- ts_split(ts.obj = USgas, sample.out = 12)
+train <- USgas_s$train
+test <- USgas_s$test
+
+# Forecasting with auto.arima
+library(forecast)
+md <- auto.arima(train)
+
+fc <- forecast(md, h = 12)
+
+# Plotting actual vs. fitted and forecasted
+test_forecast(actual = USgas, forecast.obj = fc, test = test)
+
+# Plotting the forecast 
+plot_forecast(fc)
+
+
+
+# Run horse race between multiple models
+methods <- list(ets1 = list(method = "ets",
+                            method_arg = list(opt.crit = "lik"),
+                            notes = "ETS model with opt.crit = lik"),
+                ets2 = list(method = "ets",
+                            method_arg = list(opt.crit = "amse"),
+                            notes = "ETS model with opt.crit = amse"),
+                arima1 = list(method = "arima",
+                              method_arg = list(order = c(2,1,0)),
+                              notes = "ARIMA(2,1,0)"),
+                arima2 = list(method = "arima",
+                              method_arg = list(order = c(2,1,2),
+                                                seasonal = list(order = c(1,1,1))),
+                              notes = "SARIMA(2,1,2)(1,1,1)"),
+                hw = list(method = "HoltWinters",
+                          method_arg = NULL,
+                          notes = "HoltWinters Model"),
+                tslm = list(method = "tslm",
+                            method_arg = list(formula = input ~ trend + season),
+                            notes = "tslm model with trend and seasonal components"))
+# Training the models with backtesting
+md <- train_model(input = USgas,
+                  methods = methods,
+                  train_method = list(partitions = 6, 
+                                      sample.out = 12, 
+                                      space = 3),
+                  horizon = 12,
+                  error = "MAPE")
+
+# Plot the performance of the different models on the testing partitions
+plot_model(md)
+
+
+# Holt-Winters tunning parameters with grid search
+hw_grid <- ts_grid(USgas, 
+                   model = "HoltWinters",
+                   periods = 6,
+                   window_space = 6,
+                   window_test = 12,
+                   hyper_params = list(alpha = seq(0,1,0.1),
+                                       beta = seq(0,1,0.1),
+                                       gamma = seq(0,1,0.1)))
+
+plot_grid(hw_grid, type = "3D")
+library(tseries)
+fit.1 <- arima(USgas,order=c(2,1,1),
+               seasonal =list(order = c(2,1,1)))
+
+
+Box.test(residuals(fit.1))
+
+
+```
+
+
+
+```{r}
+
+  ## 1. Load packages
+  
+
+library(tidyverse)
+library(tidytext)
+library(widyr)
+library(igraph)
+library(ggraph)
+
+#install.packages(c("tidytext", "widyr", "igraph", "ggraph"))
+```
+
+
+## 2. Read the Animal Crossing user reviews data
+
+```{r}
+user_reviews <- readr::read_tsv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-05-05/user_reviews.tsv')
+```
+
+```{r}
+user_reviews
+```
+
+
+## 3. Basic EDA
+
+```{r}
+user_reviews %>% count(user_name, sort = TRUE)
+user_reviews %>% head(10) %>% pull(text)
+```
+
+```{r}
+user_reviews <- user_reviews %>% select(-date)
+```
+
+
+
+## 4. Calculate word counts and correlations
+
+
+```{r}
+review_words <- user_reviews %>%
+  unnest_tokens(output = word, input = text) %>%
+  anti_join(stop_words, by = "word") %>%
+  filter(str_detect(word, "[:alpha:]")) %>%
+  distinct()
+```
+
+```{r}
+users_who_mention_word <- review_words %>%
+  count(word, name = "users_n") %>%
+  filter(users_n >= 100)
+word_correlations <- review_words %>%
+  semi_join(users_who_mention_word, by = "word") %>%
+  pairwise_cor(item = word, feature = user_name) %>%
+  filter(correlation >= 0.2)
+```
+
+
+## 5. Build a word network plot
+
+```{r}
+graph_from_data_frame(d = word_correlations,
+                      vertices = users_who_mention_word %>%
+                        semi_join(word_correlations, by = c("word" = "item1"))) %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(alpha = correlation)) +
+  geom_node_point() +
+  geom_node_text(aes(color = users_n, label = name), repel = TRUE)
+```
+
+
+
+## 6. Clean up the code into a function
+
+```{r}
+# Function to generate a word graph
+generate_word_graph <- function(review_words,
+                                minimum_users_n = 100,
+                                minimum_correlation = 0.2) {
+  
+  users_who_mention_word <- review_words %>%
+    count(word, name = "users_n") %>%
+    filter(users_n >= minimum_users_n)
+  
+  word_correlations <- review_words %>%
+    semi_join(users_who_mention_word, by = "word") %>%
+    pairwise_cor(item = word, feature = user_name) %>%
+    filter(correlation >= minimum_correlation)
+  graph_from_data_frame(d = word_correlations,
+                        vertices = users_who_mention_word %>%
+                          semi_join(word_correlations, by = c("word" = "item1"))) %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(alpha = correlation)) +
+    geom_node_point() +
+    geom_node_text(aes(color = users_n, label = name), repel = TRUE)
+  
+}
+```
+
+```{r}
+review_words %>%
+  generate_word_graph(minimum_users_n = 100, minimum_correlation = 0.2)
+review_words %>%
+  generate_word_graph(minimum_users_n = 100, minimum_correlation = 0.3)
+review_words %>%
+  generate_word_graph(minimum_users_n = 50, minimum_correlation = 0.2)
+```
+
+
+
+## 7. Generate plots for POSITIVE and NEGATIVE reviews
+
+```{r}
+# 
+# user_reviews %>% count(grade)
+review_words.NEGATIVE <- review_words %>%
+  filter(grade < 5)
+review_words.POSITIVE <- review_words %>%
+  filter(grade >= 5)
+```
+
+```{r}
+review_words.NEGATIVE %>%
+  generate_word_graph(minimum_users_n = 40, minimum_correlation = 0.2)
+```
+
+
+```{r}
+review_words.POSITIVE %>%
+  generate_word_graph(minimum_users_n = 30, minimum_correlation = 0.25)
+```
+
+
+
+## Classific
+
+```{r}
+
+
+set.seed(76)
+
+library(caret)
+data<-iris
+
+idx1<-createDataPartition(data$Species,p=0.3)
+idx1<-as.vector(idx1[[1]])
+remaindata<-data[-idx1,]
+idx2<-createDataPartition(remaindata$Species,p=0.1)
+
+idx2<-as.vector(idx2[[1]])
+
+train<-data[idx1,]
+valid<-remaindata[idx2,]
+test<-remaindata[-idx2,]
+
+library(gmodels)
+# 나이브베이즈
+
+library(e1071)
+naive.classf<-naiveBayes(train,train$Species)
+naive.predictions<-predict(naive.classf,test)
+
+
+CrossTable(naive.predictions,test$Species,
+           prop.chisq =F,prop.c=F,
+           pro.r=F, dnn=c('predicted','actual')
+)
+
+
+#다항 로지스틱 회귀
+library(VGAM)
+
+fit.Logistic<- vglm( Species ~ .,data=train,family=multinomial)
+
+summary(fit.Logistic) #학습된 결과 살펴보기
+probabilities.logistic <- predict(fit.Logistic, test, type="response") #모델에 Test셋 넣기
+probabilities.logistic[1:3,] # predict 결과 1~3행 확인
+apply(probabilities.logistic, 1, FUN = sum) #각 행의 합 확인
+predictions <- apply(probabilities.logistic, 1, which.max)
+predictions[which(predictions=="1")] <- levels(iris$Species)[1]
+predictions[which(predictions=="2")] <- levels(iris$Species)[2]
+predictions[which(predictions=="3")] <- levels(iris$Species)[3]
+
+
+#의사결정 나무
+library(C50)
+tree.model<-C5.0(train[-5],train$Species,trials=1, rules=T)  #  trials=10  부스팅을 통해 개선 가능
+summary(tree.model)
+tree.predict<-predict(tree.model,test)
+
+CrossTable(tree.predict,test$Species,
+           prop.chisq =F,prop.c=F,
+           pro.r=F, dnn=c('predicted','actual')
+)
+
+
+#신경망
+
+library(neuralnet)
+net.model<-neuralnet(Species~. , data=train, hidden=c(5,5))
+plot(net.model)
+
+net.results<-compute(net.model,test[,-5])
+net.predict<-net.results$net.result
+net.predict <- apply(net.predict, 1, which.max)
+net.predict[which(net.predict=="1")] <- levels(iris$Species)[1]
+net.predict[which(net.predict=="2")] <- levels(iris$Species)[2]
+net.predict[which(net.predict=="3")] <- levels(iris$Species)[3]
+
+
+CrossTable(net.predict,test$Species,
+           prop.chisq =F,prop.c=F,
+           pro.r=F, dnn=c('predicted','actual')
+)
+
+
+# SVM 
+library(kernlab)
+svm.model<-ksvm(Species~.,data=train, kernel="rbfdot")  # 다양한 커널이 있음. 자세한 내용은 책 359p.ML with R
+svm.predict<-predict(svm.model,test)
+
+
+CrossTable(svm.predict,test$Species,
+           prop.chisq =F,prop.c=F,
+           pro.r=F, dnn=c('predicted','actual')
+)
+
+
+# 가. bagging
+
+library(adabag)
+data("iris")
+iris.bagging <- bagging(Species~., data=iris, mfinal=10)
+iris.bagging$importance
+
+plot(iris.bagging$trees[[10]])
+text(iris.bagging$trees[[10]])
+
+pred <- predict(iris.bagging, newdata=iris)
+table(pred$class, iris[,5])
+
+# 나. 부스
+library(adabag)
+data("iris")
+boo.ababag <- boosting(Species~., data=iris, boos=TRUE, mfinal=10)
+boo.ababag$importance
+plot(boo.ababag$trees[[10]])
+text(boo.ababag$trees[[10]])
+pred <- predict(boo.ababag, newdata=iris)
+tb <- table(pred$class, iris[,5])
+tb
+
+error.rpart<-1-(sum(diag(tb))/sum(tb))
+error.rpart
+
+
+# random forest
+
+library(ranger)
+
+
+
+rg.iris <- ranger(Species ~ ., data = train, importance = "impurity")
+sort(rg.iris$variable.importance,decreasing = T)
+
+
+
+
+
+naive.con<-confusionMatrix(naive.predictions,test$Species)
+svm.con<-confusionMatrix(svm.predict,test$Species)
+tree.con<-confusionMatrix(tree.predict,test$Species)
+
+naive.con$byClass[3]
+naive.con$byClass[1]
+net.con<-confusionMatrix(as.factor(net.predict),test$Species)
+
+
+net.con$byClass[3]
+
+
+net.con$table
+accuracy<-c(net.con$overall[1],naive.con$overall[1],tree.con$overall[1],svm.con$overall[1])
+precision<-c(net.con$byClass[3],naive.con$byClass[3],tree.con$byClass[3],svm.con$byClass[3])
+recall<-c(net.con$byClass[1],naive.con$byClass[1],tree.con$byClass[1],svm.con$byClass[1])
+beta<-1
+f1<-(beta^2+1)*precision*recall/(beta^2*precision+recall)
+result<-data.frame((rbind(accuracy,precision,recall,f1)))
+names(result)<-c("nnet","naive","tree","svm")
+result
+
+
+library(Epi)
+nnet.ROC<-ROC(form=Species~net.predict,data=test,plot="ROC")
+svm.ROC<-ROC(form=Species~svm.predict,data=test,plot="ROC")
+tree.ROC<-ROC(form=Species~tree.predict,data=test,plot="ROC")
+example(ROC)
+
+
+```
+
+## Ridge Lasso
+
+```{r}
+# Libraries Needed
+library(caret)
+library(glmnet)
+library(mlbench)
+library(psych)
+
+# Data
+data("BostonHousing")
+data <- BostonHousing
+
+# Data Partition
+set.seed(222)
+ind <- sample(2, nrow(data), replace = T, prob = c(0.7, 0.3))
+train <- data[ind==1,]
+test <- data[ind==2,]
+
+# Custom Control Parameters
+custom <- trainControl(method = "repeatedcv",
+                       number = 10,
+                       repeats = 5,
+                       verboseIter = T)
+
+  # Linear Model
+set.seed(1234)
+lm <- train(medv~., # 종속변수
+            train,  # 데이터프레임
+            method="lm", 
+            trControl=custom
+            )
+
+# Results
+lm$results
+plot(lm$finalModel)
+summary(lm)
+# Ridge Regression
+set.seed(1234)
+ridge <- train(medv~.,
+               train,
+               method="glmnet",
+               tuneGrid= expand.grid(alpha=0,
+                                     lambda=seq(0.01,1,length=5)),
+               trControl=custom
+               )
+
+# Plot Results
+plot(ridge)
+plot(ridge$finalModel, xvar = "lambda", label = T)
+plot(ridge$finalModel, xvar = 'dev', label=T)
+plot(varImp(ridge, scale=T))
+
+# Lasso Regression
+set.seed(1234)
+lasso <- train(medv~.,
+               train,
+               method="glmnet",
+               tuneGrid= expand.grid(alpha=1,
+                                     lambda=seq(0.01,1,length=5)),
+               trControl=custom)
+
+# Plot Results
+plot(lasso)
+plot(lasso$finalModel, xvar = 'lambda', label=T)
+
+# Elastic Net Regression
+set.seed(1234)
+en <- train(medv~.,
+            train,
+            method="glmnet",
+            tuneGrid= expand.grid(alpha=seq(0,1,length=10),
+                                  lambda=seq(0.01,1,length=5)),
+            trControl=custom)
+
+# Plot Results
+plot(en)
+plot(en$finalModel, xvar = 'lambda', label=T)
+plot(en$finalModel, xvar  = 'dev', label=T)
+plot(varImp(en))
+
+# Compare Models 
+model_list <- list(LinearModel=lm,Ridge=ridge,Lasso=lasso,ElasticNet=en)
+res <- resamples(model_list)
+summary(res)
+bwplot(res)
+# Best Model
+
+en$bestTune
+best <- en$finalModel
+coef(best, s = en$bestTune$lambda)
+
+# Save Final Model for Later Use
+saveRDS(en, "final_model.rds")
+fm <- readRDS("final_model.rds")
+print(fm)
+
+# Prediction
+p1 <- predict(fm, train)
+sqrt(mean((train$medv-p1)^2))
+
+p2 <- predict(fm, test)
+sqrt(mean((test$medv-p2)^2))
+
+
+
+
+```
+
+```{r}
+
+#결측값 대치 
+library(DMwR)
+iris_test <- iris  
+
+iris_test[c(5, 7, 8, 20, 60, 100), 1] <- NA 
+iris_test[c(1, 2, 3),3] <- NA
+
+iris_test[!complete.cases(iris_test),]
+
+
+iris_test[!complete.cases(iris_test),] #결측값 있는 행 추출
+iris_test[!complete.cases(iris_test),]<-centralImputation(iris_test[1:5]) [!complete.cases(iris_test),]
+#결측값 행을 중앙값으로 대체
+
+
+test <- centralImputation(iris_test[1:4]) [c(1,2,3,5,7,8,20,60,100),]
+test
+
+
+mapply(mean, test[1:4], na.rm=TRUE)
+
+
+
+knnImputation(iris_test[1:5])[!complete.cases(iris_test),]
+test2 <- knnImputation(iris_test[1:5])[!complete.cases(iris_test),]
+mapply(mean, test2[1:4], na.rm=TRUE)
+
+
+
+
+
+```
+
+
+```{r}
+# 1. Create new columns in a count or group_by
+# 2. Sample and randomly shuffle data with slice_sample()
+# 3. Create a date column specifying year, month, and day
+# 4. Parse numbers with parse_number()
+# 5. Select columns with starts_with, ends_with, etc.
+# 6. case_when to create or change a column when conditions are met
+# 7. str_replace_all to find and replace multiple options at once
+# 8. Transmute to create or change columns and keep only those columns
+# 9. Use pipes %>% everywhere including inside mutates
+# 10. Filter groups without making a new column
+# 11. Split a string into columns based on a regular expression
+# 12. semi_join to pick only rows from the first table which are matched in the second table
+# 13. anti_join to pick only rows from the first table which are NOT matched in the second table
+# 14. fct_reorder to sort bar charts
+# 15. coord_flip to display counts more beautifully
+# 16. fct_lump to lump some factor levels into "Other"
+# 17. Generate all combinations using crossing
+# 18. Create functions that take column names with double curly braces
+# 
+# 
+# library(tidyverse)
+# library(lubridate)
+# 
+# library(nycflights13)
+# 
+# data(flights)
+# 
+# 
+# # Tip 1 of 18: Create new columns in a count or group_by
+# 
+# flights %>%
+#     mutate(long_flight = (air_time >= 6 * 60)) %>%
+#     View()
+# 
+# flights %>%
+#     mutate(long_flight = (air_time >= 6 * 60)) %>%
+#     count(long_flight)
+# 
+# flights %>%
+#     count(long_flight = air_time >= 6 * 60)
+# 
+# flights %>%
+#     count(flight_path = str_c(origin, " -> ", dest), sort = TRUE)
+# 
+# flights %>%
+#     group_by(date = make_date(year, month, day)) %>%
+#     summarise(flights_n = n(), air_time_median = median(air_time, na.rm = TRUE)) %>%
+#     ungroup()
+# 
+# 
+# # Tip 2 of 18: Sample and randomly shuffle data with slice_sample()
+# 
+# flights %>%
+#     slice_sample(n = 10)
+# 
+# flights %>%
+#     slice_sample(prop = 0.01)
+# 
+# flights %>%
+#     slice_sample(prop = 1)
+# 
+# flights %>%
+#     group_by(origin) %>%
+#     slice_sample(n = 3) %>%
+#     ungroup()
+# 
+# 
+# # Tip 3 of 18: Create a date column specifying year, month, and day
+# 
+# flights %>%
+#     select(year, month, day) %>%
+#     mutate(date = make_date(year, month, day))
+# 
+# 
+# # Tip 4 of 18: Parse numbers with parse_number()
+# 
+# numbers_1 <- tibble(number_col = c("#1", "#2", "#3"))
+# numbers_2 <- tibble(number_col = c("Number 5", "#6", "7"))
+# numbers_3 <- tibble(number_col = c("1.2%", "2.5%", "50.9%"))
+# 
+# numbers_1
+# numbers_1 %>% mutate(number_col = parse_number(number_col))
+# 
+# numbers_2
+# numbers_2 %>% mutate(number_col = parse_number(number_col))
+# 
+# numbers_3
+# numbers_3 %>% mutate(number_col = parse_number(number_col))
+# 
+# library(dplyr)
+# # Tip 5 of 18: Select columns with starts_with, ends_with, etc.
+# 
+# flights %>%
+#     dplyr::select(starts_with("dep_"))
+# 
+# flights %>%
+#     dplyr::select(starts_with("dep_"), everything())
+# 
+# flights %>%
+#     dplyr::select(ends_with("hour"))
+# 
+# flights %>%
+#     dplyr::select(contains("dep"))
+# 
+# 
+# # Tip 6 of 18: case_when to create or change a column when conditions are met
+# 
+# flights %>%
+#     dplyr::select(origin)
+# 
+# 
+# 
+# flights %>%
+#     mutate(origin = case_when(
+#         (origin == "EWR") & dep_delay > 20 ~ "Newark International Airport - DELAYED",
+#         (origin == "EWR") & dep_delay <= 20 ~ "Newark International Airport - ON TIME DEPARTURE",
+#         origin == "JFK" ~ "John F. Kennedy International Airport",
+#         origin == "LGA" ~ "LaGuardia Airport"
+#     )) %>%
+#     count(origin)
+# 
+# 
+# # Tip 7 of 18: str_replace_all to find and replace multiple options at once
+# 
+# flights %>%
+#     mutate(origin = str_replace_all(origin, c(
+#         "^EWR$" = "Newark International Airport",
+#         "^JFK$" = "John F. Kennedy International Airport",
+#         "^LGA$" = "LaGuardia Airport"
+#     ))) %>%
+#     count(origin)
+# 
+# 
+# # Tip 8 of 18: Transmute to create or change columns and keep only those columns
+# 
+# flights %>%
+#     transmute(date = make_date(year, month, day), tailnum)
+# 
+# help(str_replace_all)
+# # Tip 9 of 18: Use pipes %>% everywhere including inside mutates
+# 
+# airlines %>%
+#     mutate(name = name %>%
+#                str_to_upper() %>%
+#                str_replace_all(" (INC|CO)\\.?$", "") %>%
+#                str_replace_all(" AIR ?(LINES|WAYS)?( CORPORATION)?$", "") %>%
+#                str_to_title() %>%
+#                str_replace_all("\\bUs\\b", "US")) %>%
+#     count(name)
+# 
+# airlines %>%
+#     mutate(name = str_replace_all(str_to_title(str_replace_all(str_replace_all(str_to_upper(name), " (INC|CO)\\.?$", ""), " AIR ?(LINES|WAYS)?( CORPORATION)?$", "")), "\\bUs\\b", "US"))
+# 
+# 
+# # Tip 10 of 18: Filter groups without making a new column
+# 
+# flights %>%
+#     count(carrier, sort = TRUE)
+# 
+# flights_top_carriers <- flights %>%
+#     group_by(carrier) %>%
+#     filter(n() >= 10000) %>%
+#     ungroup()
+# 
+# flights_top_carriers %>%
+#     count(carrier, sort = TRUE)
+# 
+# 
+# # Tip 11 of 18: Split a string into columns based on a regular expression
+# 
+# airlines %>%
+#     count(name)
+# 
+# airlines %>%
+#     extract(
+#         name,
+#         into = c("short_name", "remainder"),
+#         regex = "^([^\\s]+) (.*)$"
+#     )
+# 
+# airlines %>%
+#     extract(
+#         name,
+#         into = c("short_name", "remainder"),
+#         regex = "^([^\\s]+) (.*)$",
+#         remove = FALSE
+#     )
+# 
+# 
+# # Tip 12 of 18: semi_join to pick only rows from the first table which are matched in the second table
+# 
+# airways_beginning_with_a <- airlines %>%
+#     filter(name %>% str_detect("^A"))
+# 
+# flights %>%
+#     semi_join(airways_beginning_with_a, by = "carrier") %>%
+#     count(carrier)
+# 
+# 
+# # Tip 13 of 18: anti_join to pick only rows from the first table which are NOT matched in the second table
+# 
+# flights %>%
+#     anti_join(airways_beginning_with_a, by = "carrier")
+# 
+# 
+# # Tip 14 of 18: fct_reorder to sort bar charts help(left_join)
+# 
+# flights_with_airline_names <- flights %>%
+#     left_join(airlines, by = "carrier")
+# 
+# flights_with_airline_names %>%
+#     count(name) %>%
+#     ggplot(aes(name, n)) +
+#     geom_col()
+# 
+# flights_with_airline_names %>%
+#     count(name) %>%
+#     mutate(name = fct_reorder(name, n)) %>%
+#     ggplot(aes(name, n)) +
+#     geom_col()
+# 
+# 
+# # Tip 15 of 18: coord_flip to display counts more beautifully
+# 
+# flights_with_airline_names %>%
+#     count(name) %>%
+#     mutate(name = fct_reorder(name, n)) %>%
+#     ggplot(aes(name, n)) +
+#     geom_col() +
+#     coord_flip()
+# 
+# 
+# # Tip 16 of 18: fct_lump to lump some factor levels into "Other"
+# 
+# flights_with_airline_names %>%
+#     mutate(name = fct_lump(name, n = 9)) %>%   ##여기서 n은 상위 몇개까지의 데이터를 나타내고 나머지는 other
+#     count(name) %>%
+#     mutate(name = fct_reorder(name, n)) %>%
+#     ggplot(aes(name, n)) +
+#     geom_col() +
+#     coord_flip()
+# 
+# 
+# # Tip 17 of 18: Generate all combinations using crossing
+# 
+# crossing(
+#     customer_channel = c("Online", "Physical store"),
+#     customer_status = c("New", "Repeat"),
+#     spend_range = c("$0-$100", "$100-$200", "$200-$500", "$500+")
+# )
+# 
+# 
+# # Tip 18 of 18: Create functions that take column names with double curly braces
+# 
+# col_summary <- function(data, col_names, na.rm = TRUE) {
+#     data %>%
+#         summarise(across({{ col_names }},
+#                          list(
+#                              min = min,
+#                              max = max,
+#                              median = median,
+#                              mean = mean
+#                          ),
+#                          na.rm = na.rm,
+#                          .names = "{col}_{fn}"
+#         ))
+# }
+# 
+# flights_with_airline_names %>%
+#     col_summary(c(air_time, arr_delay))
+# 
+# flights_with_airline_names %>%
+#     group_by(carrier) %>%
+#     col_summary(c(air_time, arr_delay))
+# 
+# 
+
+```
+
+# 모의고사 
+
+```{r}
+# # ADP실기 모의고사 1회 R코드
+# # ADP실기 모의고사 2회 R코드
+# # ADP실기 모의고사 3회 R코드
+# 
+# # ADP실기 모의고사 4회 R코드
+# 
+# 
+# ###################################################################################
+# #                      1. 정형 데이터마이닝 (사용 데이터 : weatherAUS)                  
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------------------
+# # Q1) 데이터의 요약값을 보고 NA값이 10,000개 이상인 열을 제외하고 남은 변수 중 NA값이 있는 행을 제거하시오. 
+# #     그리고 AUS 데이터의 Date 변수를 Date형으로 변환하고, 
+# #     전처리가 완료된 weatherAUS 데이터를 train(70%), test(30%) 데이터로 분할하시오.
+# #     (set.seed(6789)를 실행한 후 데이터를 분할하시오.)
+# #---------------------------------------------------------------------------------------
+# 
+# 
+# ##데이터 불러오기
+# AUS<-read.csv("weatherAUS.csv")
+# 
+# summary(AUS)
+# 
+# #"WindDir9am", "Pressure9am", "Pressure3pm", "Cloud9am", "Cloud3am"는 NA's가 10000개 이상이므로 데이터에서 제외
+# AUS_1<-AUS[,c("Date","Location","MinTemp","MaxTemp","Rainfall","WindGustDir","WindGustSpeed",
+#               "WindDir3pm","WindSpeed9am","WindSpeed3pm","Humidity9am","Humidity3pm",
+#               "Temp9am","Temp3pm","RainToday","RainTomorrow" )]
+# 
+# summary(AUS_1)
+# 
+# AUS_1$Date<-as.Date(AUS_1$Date) 
+# str(AUS_1)
+# 
+# 
+# #결측치 삭제
+# str(AUS_1)
+# AUS_1<-na.omit(AUS_1)
+# 
+# str(AUS_1)           #약 12,000개가 삭제됨
+# 
+# #데이터 분할
+# install.packages("caret")
+# library(caret)
+# 
+# set.seed(6789)
+# parts<-createDataPartition(AUS_1$RainTomorrow, p=0.7)
+# idx<-as.vector(parts[[1]])
+# 
+# train<-AUS_1[idx,]
+# test<-AUS_1[-idx,]
+# nrow(train)
+# nrow(test)
+# 
+# #---------------------------------------------------------------------------------------
+# # Q2) train 데이터로 종속변수인 RainTomorrow(다음날의 강수 여부)를 예측하는 분류모델을 
+# #     3개 이상 생성하고 test 데이터에 대한 예측값을 csv파일로 각각 제출하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# install.packages(c("ipred","adabag","e1071","caret","randomForest"))
+# library(ipred)
+# library(e1071)
+# library(caret)
+# library(adabag)
+# library(randomForest)
+# 
+# #모델링 (1) bagging(깊이를 최대 5개까지,노드에서 최소 관측치는 15개 이상, 사용할 나무 15개)
+# 
+# bg.model <- bagging(RainTomorrow~., data=train, mfinal=15, control = rpart.control(maxdepth=5, minsplit=15))
+# 
+# pred<-predict(bg.model,test[,-16],type="prob")
+# 
+# pred_1<-data.frame(pred$prob,RainTomorrow=pred$class)
+# 
+# head(pred_1)
+# 
+# write.csv(pred,"bagging predict.csv")
+# 
+# pred<-predict(bg.model,test[,-16],type="class")
+# table(pred$class,test[,16])
+# 
+# #모델링 (2) boosting(깊이를 최대 5개까지,노드에서 최소 관측치는 15개 이상, 사용할 나무 15개, 모든 관측치에 동일한 가중치)
+# 
+# bs.model <- boosting(RainTomorrow~., data=train, boos=FALSE, mfinal=15, control = rpart.control(maxdepth=5, minsplit=15))
+# 
+# pred<-predict(bs.model,test[,-16],type="prob")
+# 
+# pred_1<-data.frame(pred$prob,RainTomorrow=pred$class)
+# 
+# head(pred_1)
+# 
+# write.csv(pred_1,"bagging predict.csv")
+# 
+# pred<-predict(bs.model,test[,-16],type="class")
+# table(pred$class,test[,16])
+# 
+# #모델링 (3) 랜덤 포레스트
+# install.packages("randomForest")
+# library(randomForest)
+# 
+# rf.model<-randomForest(RainTomorrow~., data=train)
+# print(rf.model)
+# 
+# pred<-predict(rf.model,test[,-16],type="prob")
+# 
+# write.csv(pred,"randomForest predict.csv")
+# 
+# pred<-predict(rf.model,test[,-16],type="class")
+# table(pred,test[,16])
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q3) 생성된 3개의 분류모델에 대해 성과분석을 실시하여 정확도를 비교하여 설명하시오. 
+# #     또, ROC curve를 그리고 AUC값을 산출하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# 
+# #성과분석 - (1) bagging
+# install.packages(c("caret","ROCR"))
+# library(caret)
+# library(ROCR)
+# 
+# pred.bg<-predict(bg.model,test[,-16],type="class")
+# table(pred.bg$class,test[,16])
+# 
+# confusionMatrix(data=as.factor(pred.bg$class), reference=test[,16],positive="No")
+# 
+# pred.bg.roc<-prediction(as.numeric(as.factor(pred.bg$class)),as.numeric(test[,16]))
+# plot(performance(pred.bg.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.bg.roc,"auc")@y.values
+# 
+# #성과분석 - (2) boosting
+# 
+# pred.bs<-predict(bs.model,test[,-16],type="class")
+# table(pred.bs$class,test[,16])
+# 
+# confusionMatrix(data=as.factor(pred.bs$class), reference=test[,16], positive="No")
+# 
+# pred.bs.roc<-prediction(as.numeric(as.factor(pred.bs$class)),as.numeric(test[,16]))
+# plot(performance(pred.bs.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.bs.roc,"auc")@y.values
+# 
+# #성과분석 - (3) 랜덤 포레스트
+# 
+# pred.rf<-predict(rf.model,test[,-16],type="class")
+# confusionMatrix(data=pred.rf, reference=test[,16],positive="No")
+# 
+# pred.rf.roc<-prediction(as.numeric(pred.rf),as.numeric(test[,16]))
+# plot(performance(pred.rf.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.rf.roc,"auc")@y.values
+# 
+# 
+# 
+# ###################################################################################
+# #                     2. 통계분석 (사용 데이터 : bike_marketing)               
+# ###################################################################################
+# 
+# 
+# #---------------------------------------------------------------------------------
+# # Q1) pop_density 변수를 factor형 변수로 변환하고, 
+# #     pop_density별 revenues의 평균 차이가 있는지 통계분석을 시행하여 결과를 해석하시오. 
+# #     만일 대립가설이 채택된다면 사후분석을 실시하고 결과를 해석하시오.
+# #---------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #작업 디렉토리 설정
+# setwd("C:/ADP/data")
+# 
+# #데이터 불러오기
+# bike <-read.csv("bike_marketing.csv")
+# 
+# str(bike)    
+# head(bike)
+# tail(bike)
+# 
+# sum(is.na(bike))  #NA값이 존재하는지 확인
+# attach(bike)
+# 
+# # pop_density 변수를 factor형 변수로 변환
+# pop_density<-as.factor(pop_density)
+# str(bike)
+# 
+# 
+# # pop_density별 revenues의 평균 차이가 있는지를 알아보기위한 일원배치 분산분석 수행
+# # 귀무가설 : 인구밀집정도에 따른 revenues의 평균은 모두 같다.
+# # 대립가설 : 적어도 하나의 밀집정도 수준에 대한 revenues의 평균값에는 차이가 있다. 
+# 
+# 
+# # 분산분석 수행
+# result<-aov(revenues~pop_density, data=bike) #분산분석 결과를 result 변수에 저장
+# summary(result)                              #분산분석표 확인
+# 
+# 
+# #----------------------------------------------------------------------------------------
+# # Q2) google_adwords, facebook, twitter, marketing_total, employees가 
+# #     revenues에 영향을 미치는지 알아보는 회귀분석을 전진선택법을 사용하여 수행하고 결과를 해석하시오.
+# #----------------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# # 회귀모형 생성
+# bike.lm <- lm(revenues ~ google_adwords + facebook + twitter + 
+#                 marketing_total + employees, data=bike)
+# 
+# 
+# 
+# # 회귀모형에 대한 정보 확인
+# summary(bike.lm)
+# 
+# 
+# # 전진선택법을 통한 변수선택 수행
+# # 변수 선택의 상한과 하한에 대한 포뮬러 생성
+# formula_low <- lm(revenues ~ 1, data=bike) 
+# formula_up <- lm(revenues ~ google_adwords + facebook + twitter + 
+#                    marketing_total + employees, data=bike) 
+# 
+# # step함수를 이용해 전진선택법 진행
+# step(formula_low, scope=list(upper=formula_up), direction="forward")
+# # 인자 설명 => upper인자 : 변수선택을 진행할 때 모델의 상한범위
+# 
+# 
+# 
+# #---------------------------------------------------------------------------
+# # Q3) 전진선택법을 사용해 변수를 선택한 후 새롭게 생성한 회귀모형에 대한 
+# #     잔차분석을 수행하고 결과를 해석하시오. 
+# #---------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #독립성 가정을 만족하는지 확인 (더빈왓슨 검정)
+# install.packages("lmtest")  #더빈왓슨 검정을 위해 필요한 패키지 설치
+# library(lmtest)
+# 
+# dwtest(bike.lm)
+# 
+# 
+# #정규성 가정을 만족하는지 확인
+# shapiro.test(resid(bike.lm))
+# 
+# 
+# #등분산성, 정규성 가정을 만족하는지 확인
+# par(mfrow=c(2,2))
+# plot(bike.lm)  
+# 
+# 
+# 
+# ###################################################################################
+# #                      3. 비정형 데이터마이닝 (사용 데이터 : "instagram_태교여행")
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------
+# # Q1) ‘instagram_태교여행.txt’ 데이터를 읽어온 뒤 숫자, 특수 문자 등을 
+# #     제거하는 전처리 작업을 시행하시오.
+# #---------------------------------------------------------------------------
+# 
+# install.packages(c("KoNLP","wordcloud"))
+# install.packages("rJava")
+# install.packages("tm")
+# install.packages("plyr")
+# library(tm)
+# library(rJava)
+# library(KoNLP)
+# library(wordcloud)
+# library(plyr)
+# library(stringr)
+# 
+# useSejongDic()
+# 
+# instagram_tour<-readLines("instagram_태교여행.txt")
+# instagram_tour
+# 
+# #데이터 전처리
+# clean_txt<-function(txt){
+#   txt<-tolower(txt)             # 대, 소문자 변환
+#   txt<-removePunctuation(txt)   # 구두점 제거
+#   txt<-removeNumbers(txt)       # 숫자 제거
+#   txt<-stripWhitespace(txt)     # 공백제거
+#   
+#   return(txt)
+# }
+# tour_1<-clean_txt(instagram_tour)
+# 
+# tour_1
+# 
+# #---------------------------------------------------------------------------
+# # Q2) 전처리된 데이터에서 “태교여행”이란 단어를 사전에 추가하고 명사를 추출해 
+# #     출현빈도 10위까지 막대그래프로 시각화하시오. 
+# #---------------------------------------------------------------------------
+# 
+# buildDictionary(ext_dic = "woorimalsam", user_dic=data.frame(c("태교여행"),"ncn"),replace_usr_dic = T)
+# 
+# tour1<-sapply(tour_1,extractNoun)
+# 
+# table.cnoun<-head(sort(table(unlist(tour1)),decreasing=T),10)
+# 
+# barplot(table.cnoun, main="tour 데이터 빈출 명사", 
+#         xlab="단어",
+#         ylab="빈도")
+# 
+# # 3) 전처리된 데이터를 이용해 워드클라우드를 작성하고 인사이트를 추출하시오.
+# 
+# result<-data.frame(sort(table(unlist(tour1)),decreasing=T))
+# 
+# t<-wordcloud(result$Var1,result$Freq,color=brewer.pal(6,"Dark2"),min.freq=20)
+# 
+# ###################################################################################
+# #                      1. 통계분석 (사용 데이터 : Carseats)                  
+# ###################################################################################
+# 
+# #------------------------------------------------------------------------------------------------
+# # Q1) Urban변수에 따른 Sales의 차이가 있는지를 통계적으로 검증하기 위한 통계분석을 수행하고, 결과를 해석하시오. 
+# #    (데이터는 정규성을 만족한다고 가정하고 유의수준 0.05 하에서 검정
+# #------------------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# 
+# ##데이터 불러오기
+# install.packages("ISLR")
+# library(ISLR)
+# 
+# data(Carseats)
+# car<-Carseats
+# str(car)
+# head(car)
+# 
+# sum(is.na(car))  #NA값이 존재하는지 확인
+# 
+# # Urban변수에 따른 Sales의 차이를 통계적으로 검증하기 위한 독립표본 t-검정을 수행
+# # 귀무가설 : 도시인지의 여부에 따른 판매량에는 차이가 없다. 
+# # 대립가설 : 도시인지의 여부에 따른 판매량에는 차이가 없다.
+# 
+# # 등분산 검정 수행
+# # 귀무가설 : 두 집단의 분산이 동일하다.
+# # 대립가설 : 두 집단의 분산이 동일하지 않다.
+# var.test(Sales~Urban, data=car, alternative="two.sided") 
+# 
+# # 두 모집단이 등분산성 가정을 만족한다는 가정하에서 독립표본 t-검정을 수행 
+# t.test(Sales~Urban, data=car, alternative="two.sided", var.equal=TRUE)
+# 
+# 
+# #------------------------------------------------------------------------------------------------
+# # Q2)Sales변수와 CompPrice, Income, Advertising, Population, Price, Age, Education 변수들 간에 
+# #    피어슨 상관계수를 이용한 상관관계 분석을 수행하고 이를 해석하시오.
+# #------------------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# 
+# attach(car)
+# 
+# #1. Sales 와 CompPrice 간의 상관분석
+# 
+# cor(Sales, CompPrice)         #피어슨 상관계수 산출
+# cor.test(Sales, CompPrice)    #피어슨 상관계수 검정
+# 
+# 
+# #2. Sales 와 Income 간의 상관분석
+# 
+# cor(Sales, Income)         #피어슨 상관계수 산출
+# cor.test(Sales, Income)    #피어슨 상관계수 검정
+# 
+# 
+# #3. Sales 와 Advertising 간의 상관분석
+# 
+# cor(Sales, Advertising)       #피어슨 상관계수 산출
+# cor.test(Sales, Advertising)  #피어슨 상관계수 검정
+# 
+# 
+# #4. Sales 와 Population 간의 상관분석
+# 
+# cor(Sales, Population)         #피어슨 상관계수 산출
+# cor.test(Sales, Population)    #피어슨 상관계수 검정
+# 
+# 
+# #5. Sales 와 Price 간의 상관분석
+# 
+# cor(Sales, Price)         #피어슨 상관계수 산출
+# cor.test(Sales, Price)    #피어슨 상관계수 검정
+# 
+# 
+# #6. Sales 와 Age 간의 상관분석
+# 
+# cor(Sales, Age)         #피어슨 상관계수 산출
+# cor.test(Sales, Age)    #피어슨 상관계수 검정
+# 
+# 
+# #7. Sales 와 Education 간의 상관분석
+# 
+# cor(Sales, Education)         #피어슨 상관계수 산출
+# cor.test(Sales, Education)    #피어슨 상관계수 검정
+# 
+# 
+# #8. 상관계수 행렬 생성 및 시각화
+# str(car)
+# cor(car[,-c(7,10,11)])
+# plot(car[,-c(7,10,11)])
+# 
+# 
+# 
+# #------------------------------------------------------------------------------------------------
+# # Q3) 종속변수를 Sales, 독립변수를 CompPrice, Income, Advertising, Population, Price, 
+# #     Age, Education으로 설정하고 후진제거법을 활용하여 회귀분석을 실시하고, 추정된 회귀식을 작성하시오. 
+# #------------------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# #후진제거법을 통한 변수선택 수행
+# step(lm(Sales~CompPrice+Income+Advertising+Population+Price+ 
+#           Age+Education, data=car), direction="backward")
+# 
+# 
+# #------------------------------------------------------------------------------------------------
+# # Q4)  앞서 생성한 회귀모델에 대해 해석하시오.
+# #------------------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# 
+# #변수선택을 통해 도출된 회귀모형
+# car.lm <- lm(Sales ~ CompPrice + Income + Advertising + Price + Age, data = car)
+# summary(car.lm)
+# 
+# 
+# ###################################################################################
+# #                      2. 정형 데이터마이닝 (사용 데이터 : BlackFriday)                  
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------------------
+# # Q1) "BlackFriday"데이터에서 Product_Category_2, Product_Category_3의 NA 값에 0값으로 대체하고
+# #     Product_categry_1, 2, 3 변수의 값을 다 더한 Product_all 변수를 생성하여 추가하라.
+# #     그리고 User_ID를 character 변수로, Occupation, Marital_Status, Product_Category_1, 
+# #     Product_Category_2, Product_Category_3 변수를 범주형 변수로 변환하시오. 
+# #     마지막으로 범주형 변수인 Gender, Age, City_Category, Stay_In_Current_City_Years를 
+# #     더미변수로 변환해서 BlackFriday 데이터에 추가하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# BlackFriday<-read.csv("BlackFriday.csv")
+# 
+# str(BlackFriday)
+# 
+# ##결측치 대체
+# 
+# BlackFriday$Product_Category_2<-ifelse(is.na(BlackFriday$Product_Category_2)==TRUE,
+#                                        0,
+#                                        BlackFriday$Product_Category_2)
+# 
+# BlackFriday$Product_Category_3<-ifelse(is.na(BlackFriday$Product_Category_3)==TRUE,
+#                                        0,
+#                                        BlackFriday$Product_Category_3)
+# 
+# summary(BlackFriday)
+# 
+# ##변수 추가(Product_all)
+# 
+# BlackFriday<-transform(BlackFriday, 
+#                        Product_all=Product_Category_1 + Product_Category_2 + Product_Category_3)
+# 
+# ##데이터 형태 변환 
+# 
+# BlackFriday$User_ID<-as.character(BlackFriday$User_ID)
+# BlackFriday$Occupation<-as.factor(BlackFriday$Occupation)
+# BlackFriday$Marital_Status<-as.factor(BlackFriday$Marital_Status)
+# BlackFriday$Product_Category_1<-as.factor(BlackFriday$Product_Category_1)
+# BlackFriday$Product_Category_2<-as.factor(BlackFriday$Product_Category_2)
+# BlackFriday$Product_Category_3<-as.factor(BlackFriday$Product_Category_3)
+# 
+# str(BlackFriday)
+# 
+# ## 더미 변수화(Gender, Age, City_Category, Stay_In_Current_City_Years)
+# 
+# # 더미화를 위해 해당 변수 수치화
+# install.packages("caret")
+# library(caret)
+# library(dplyr)
+# 
+# BlackFriday_1 <- BlackFriday %>% mutate(Gender_binary = as.numeric(Gender), 
+#                                         age_binary = as.numeric(Age),
+#                                         City_Category_numeric = as.numeric(City_Category), 
+#                                         Stay_In_Current_City_Years_numeric = as.numeric(Stay_In_Current_City_Years))
+# 
+# dummy <- dummyVars("~ Gender + Age + City_Category + Stay_In_Current_City_Years", data = BlackFriday_1)
+# 
+# new_df<-data.frame(predict(dummy,newdata=BlackFriday_1))
+# 
+# BlackFriday_2<-cbind(BlackFriday, new_df)
+# 
+# str(BlackFriday_2)
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q2) BlackFriday_1 데이터에서 User_ID, Product_ID, Gender, Age, City_Category, Stay_In_Current_City_Years, 
+# #     Product_all  변수를 제외한 나머지 변수들을 활용하여 kmeans 군집분석을 수행하고 해석하시오.
+# #     (범주형 변수는 수치형 변수로 변환하여 분석에 활용하시오.)
+# #     그리고 최적의 군집 개수를 찾아서 만일 군집 개수가 이전 결과와 다르면 분석을 다시 수행하여 해석하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# BlackFriday_cluster <- BlackFriday_2 %>% select(-User_ID, 
+#                                                 -Product_ID, 
+#                                                 -Gender, 
+#                                                 -Age, 
+#                                                 -City_Category, 
+#                                                 -Stay_In_Current_City_Years,
+#                                                 -Product_all)
+# 
+# BlackFriday_cluster$Occupation<-as.numeric(BlackFriday_cluster$Occupation)
+# BlackFriday_cluster$Marital_Status<-as.numeric(BlackFriday_cluster$Marital_Status)
+# BlackFriday_cluster$Product_Category_1<-as.numeric(BlackFriday_cluster$Product_Category_1)
+# BlackFriday_cluster$Product_Category_2<-as.numeric(BlackFriday_cluster$Product_Category_2)
+# BlackFriday_cluster$Product_Category_3<-as.numeric(BlackFriday_cluster$Product_Category_3)
+# 
+# str(BlackFriday_cluster)
+# 
+# set.seed(1234)
+# 
+# kmeans_BF<-kmeans(BlackFriday_cluster,3)
+# 
+# kmeans_BF
+# 
+# # Sum of square means그래프로 최적의 군집 찾기
+# 
+# #최소 군집 2개, 최대 군집 20개
+# wssplot <- function(data, nc = 15, seed = 1234) {
+#   wss <- (nrow(data) - 1) * sum(apply(data, 2, var))
+#   for (i in 2:nc) {
+#     set.seed(seed)
+#     wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+#   plot(1:nc, wss, type="b", xlab = "Number of Clusters",
+#        ylab = "Within groups sum of squares")}
+# 
+# wssplot(BlackFriday_cluster)     #최적의 군집이 4개로 나타남
+# 
+# #군집의 개수를 4개로 하여 kmeans를 다시 실시
+# kmeans_BF_4<-kmeans(BlackFriday_cluster,4)
+# 
+# kmeans_BF_4
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q3) 최적의 군집 개수를 찾아 재수행한 군집분석의 결과로 분류된 군집번호를 원본 데이터인 BlackFriday데이터의 
+# #     각 행에 맞게 labelling하여 clust라는 변수로 저장하고 csv 파일로 출력하시오.
+# #     마지막으로 clust별 Gender, Age, Purchase으로 특성을 파악하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# kmeans_clust <- kmeans_BF_4$cluster
+# 
+# BlackFriday_full<-cbind(BlackFriday, clust=kmeans_clust)
+# 
+# str(BlackFriday_full)
+# 
+# write.csv(BlackFriday_full,"BlackFriday clust.csv")
+# 
+# 
+# table(BlackFriday_full$clust)    # 군집내의 수는 2>3>1>4순으로 많음.
+# 
+# #Clust별 Gender 요약
+# xtabs(BlackFriday_full$clust ~ BlackFriday_full$Gender)
+# 
+# xtabs(~BlackFriday_full$clust + BlackFriday_full$Gender)
+# 
+# 
+# #Clust별 Age 요약
+# xtabs(BlackFriday_full$clust ~ BlackFriday_full$Age)
+# 
+# xtabs(~BlackFriday_full$clust + BlackFriday_full$Age)
+# 
+# 
+# #Clust별 Purchase 요약
+# aggregate(Purchase~clust, BlackFriday_full, mean) 
+# 
+# aggregate(Purchase~Age, BlackFriday_full, mean) 
+# 
+# aggregate(Purchase~Gender, BlackFriday_full, mean) 
+# 
+# 
+# ###################################################################################
+# #                      3. 비정형 데이터마이닝 (사용 데이터 : "공구 블로그 댓글")
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------
+# # Q1) ‘공구 블로그 댓글.txt’ 파일을 읽어 들여 숫자, 특수 문자 등을 
+# #     제거하는 전처리 작업을 시행하시오.
+# #---------------------------------------------------------------------------
+# 
+# install.packages(c("KoNLP","wordcloud"))
+# install.packages("rJava")
+# install.packages("tm")
+# install.packages("plyr")
+# library(tm)
+# library(rJava)
+# library(KoNLP)
+# library(wordcloud)
+# library(plyr)
+# library(stringr)
+# 
+# useSejongDic()
+# 
+# blog<-read.csv("공구 블로그 댓글.txt",sep="\t")
+# 
+# ##데이터 전처리
+# #"\t" 없애기
+# 
+# blog$Date<-as.character(blog$Date)
+# 
+# blog$Date<-substr(blog$Date,1,10)
+# 
+# blog
+# 
+# #데이터 전처리
+# clean_txt<-function(txt){
+#   txt<-tolower(txt)             # 대, 소문자 변환
+#   txt<-removePunctuation(txt)   # 구두점 제거
+#   txt<-removeNumbers(txt)       # 숫자 제거
+#   txt<-stripWhitespace(txt)     # 공백제거
+#   
+#   return(txt)
+# }
+# blog$Content<-clean_txt(blog$Content)
+# 
+# blog
+# 
+# 
+# 
+# #---------------------------------------------------------------------------
+# # Q2) ‘사전.txt’를 사전에 추가하고 문서에서 형용사를 추출하여라. 
+# #---------------------------------------------------------------------------
+# 
+# #사전 추가하기
+# buildDictionary(ext_dic = "woorimalsam", user_dic=data.frame(readLines("사전.txt"),"ncn"),replace_usr_dic = T)
+# 
+# #형용사 추출하기
+# doc<-as.character(blog$Content)
+# pos<-paste(SimplePos09(doc))
+# extracted<-str_match(pos,'([가-힣]+)/[P]')
+# keyword<-extracted[,2]
+# keyword[!is.na(keyword)]
+# 
+# #---------------------------------------------------------------------------
+# # Q3) 2월에 게시된 댓글의 명사를 추출하고 빈도수를 시각화하시오.
+# #---------------------------------------------------------------------------
+# 
+# #2월 추출하기
+# blog$Date<-as.Date(blog$Date, format="%Y.%m.%d")
+# blog$month<-as.numeric(format(blog$Date, "%m"))
+# blog$month
+# blog_2<-subset(blog,blog$month==2)
+# 
+# #2월 댓글의 명사추출
+# blog2_exN<-sapply(blog_2$Content,extractNoun)
+# Noun<-as.vector(unlist(blog2_exN))
+# Noun_2<-Noun[nchar(Noun)>=2]
+# table.cnoun<-head(sort(table(Noun_2),decreasing=T),5)
+# 
+# #시각화
+# colors<-rainbow(5)
+# pie(table.cnoun, main="2월 댓글 빈출 명사",col=colors)
+# legend("right",names(table.cnoun),fill=colors)
+# 
+# 
+# ###################################################################################
+# #                      1. 통계분석 (사용 데이터 : Admission)                  
+# ###################################################################################
+# 
+# 
+# #---------------------------------------------------------------------------------
+# # Q1) 종속변수인 chance_of_admit(입학 허가 확률)와 독립변수(GRE, TOEFL, 
+# #     Univ_Rating, SOP, LOR, CGPA)에 대해 피어슨 상관계수를 이용한 상관관계 분석을 
+# #     수행하고 그래프를 이용하여 분석결과를 설명하시오.
+# #---------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #작업 디렉토리 설정
+# setwd("C:/ADP/data")
+# 
+# #데이터 불러오기
+# adms<-read.csv("Admission.csv")
+# 
+# str(adms)    
+# head(adms)
+# tail(adms)
+# 
+# sum(is.na(adms))
+# attach(adms)
+# 
+# #1. GRE 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(GRE, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(GRE, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #2. TOEFL 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(TOEFL, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(TOEFL, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #3. Univ_Rating 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(Univ_Rating, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(Univ_Rating, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #4. SOP 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(SOP, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(SOP, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #5. LOR 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(LOR, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(LOR, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #6. CGPA 와 Chance_of_Admit 간의 상관분석
+# 
+# cor(CGPA, Chance_of_Admit)         #피어슨 상관계수 산출
+# cor.test(CGPA, Chance_of_Admit)    #피어슨 상관계수 검정
+# 
+# 
+# #7. 상관계수 행렬 생성 및 시각화
+# cor(adms[,-7])
+# plot(adms[,-7])
+# 
+# 
+# #상관계수를 시각화하기 위한 패키지 설치
+# install.packages("corrgram") #상관계수를 시각화하기 위한 패키지 설치
+# library(corrgram)
+# 
+# 
+# #상관계수를 대각선의 형태로 시각화
+# #upper.panel=panel.conf : 우측상단에 상관계수와 신뢰구간을 나타내는 것을 의미함
+# corrgram(adms[,-7], upper.panel=panel.conf) 
+# 
+# 
+# 
+# #---------------------------------------------------------------------------------
+# # Q2) GRE, TOEFL, Univ_Rating, SOP, LOR, CGPA, Research가 Chance_of_Admit에 
+# #     영향을 미치는지 알아보는 회귀분석을 단계적 선택법을 사용하여 수행하고 결과를 해석하시오.
+# #---------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# #회귀모형 생성
+# str(adms)
+# adms.lm <- lm(Chance_of_Admit ~., data=adms)
+# 
+# 
+# 
+# #회귀모형에 대한 정보 확인
+# summary(adms.lm)
+# 
+# 
+# #단계선택법을 통한 변수선택 수행
+# step(adms.lm, direction="both")
+# 
+# 
+# #변수선택을 통해 도출된 회귀모형
+# adms.lm2 <- lm(Chance_of_Admit ~ GRE + TOEFL + LOR + CGPA + Research, data=adms)
+# summary(adms.lm2)
+# 
+# 
+# 
+# #---------------------------------------------------------------------------
+# # Q3) 단계 선택법을 사용해 변수를 선택한 후 새롭게 생성한 회귀모형에 대한 
+# #     잔차분석을 수행하고 결과를 해석하시오. 
+# #---------------------------------------------------------------------------
+# 
+# 
+# #독립성 가정을 만족하는지 확인 (더빈왓슨 검정)
+# install.packages("lmtest")  #더빈왓슨 검정을 위해 필요한 패키지 설치
+# library(lmtest)
+# 
+# dwtest(adms.lm2)
+# 
+# 
+# #정규성 가정을 만족하는지 확인
+# shapiro.test(resid(adms.lm2))
+# 
+# 
+# #등분산성, 정규성 가정을 만족하는지 확인
+# par(mfrow=c(2,2))
+# plot(adms.lm2)  
+# 
+# 
+# 
+# ###################################################################################
+# #                      2. 정형 데이터마이닝 (사용 데이터 : Titanic)                  
+# ###################################################################################
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q1) cabib, embarked변수의 값 중 ""로 처리된 값을 NA로 바꾸고 아래의 데이터 테이블을 보고 
+# #     문자형, 범주형 변수들을 각각 character, factor형으로 변환하시오.
+# #     또, 수치형 변수가 NA인 값을 중앙값으로 대체하고, 범주형 변수가 NA인 값을 최빈값으로 대체하고
+# #     age변수를 아래의 표와 같이 구간화하여 age_1이라는 변수를 생성하고 추가하시오. 
+# #---------------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# ##데이터 불러오기
+# titanic<-read.csv("titanic.csv")
+# summary(titanic)
+# 
+# #cabin, embarked의 "" -> NA 바꾸기
+# levels(titanic$embarked)
+# 
+# levels(titanic$embarked)[1]<-NA
+# table(titanic$embarked,useNA="always") #useNA="always"는 NA 개수도 출력
+# 
+# titanic$cabin<-ifelse(titanic$cabin=="",NA,titanic$cabin)
+# summary(titanic)
+# 
+# #데이터 형태 변환
+# str(titanic)
+# 
+# titanic$pclass<-as.factor(titanic$pclass)
+# titanic$name<-as.character(titanic$name)
+# titanic$ticket<-as.character(titanic$ticket)
+# titanic$cabin<-as.character(titanic$cabin)
+# titanic$survived<-factor(titanic$survived,levels=c(0,1),labels=c("dead","survived"))
+# 
+# #결측치 대치
+# install.packages("DMwR")
+# library(DMwR)
+# 
+# sum(complete.cases(titanic))
+# summary(titanic)
+# titanic2<-centralImputation(titanic)
+# summary(titanic2)
+# sum(is.na(titanic2))
+# 
+# #age_1생성 및 데이터 추가
+# titanic2<-within(titanic2,
+#                  {
+#                    age_1=integer(0)
+#                    age_1[age>=0 & age<10]=0
+#                    age_1[age>=10 & age<20]=1
+#                    age_1[age>=20 & age<30]=2
+#                    age_1[age>=30 & age<40]=3
+#                    age_1[age>=40 & age<50]=4
+#                    age_1[age>=50 & age<60]=5
+#                    age_1[age>=60 & age<70]=6
+#                    age_1[age>=70 & age<80]=7
+#                    age_1[age>=80 & age<90]=8
+#                  })
+# 
+# titanic2$age_1<-factor(titanic2$age_1,levels=c(0,1,2,3,4,5,6,7,8),
+#                        labels=c("10세 미만","10대","20대","30대","40대","50대","60대","70대","80대"))
+# 
+# str(titanic2)
+# 
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q2) 전처리가 완료된 titanic 데이터를 train(70%), test(30%) 데이터로 분할하시오.
+# #    (set.seed(12345)를 실행한 후 데이터를 분할하시오.) 
+# #    또, train 데이터로 종속변수인 survived(생존 여부)를 독립변수 pclass, sex, sibsp, parch, 
+# #    fare, embarked로 지정하여 예측하는 분류모델을 3개 이상 생성하고 test 데이터에 대한 
+# #    예측값을 csv파일로 각각 제출하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #데이터 분할
+# set.seed(12345)
+# idx<-sample(1:nrow(titanic2),size=nrow(titanic2)*0.7,replace=FALSE)
+# train<-titanic2[idx,]
+# test<-titanic2[-idx,]
+# nrow(train)
+# nrow(test)
+# 
+# str(train)
+# 
+# #모델링 하기 전 분석에 사용할 변수만 추출
+# train_1<-train[,c("pclass","survived", "sex", "sibsp", "parch", "fare", "embarked")]
+# test_1<-test[,c("pclass","survived", "sex", "sibsp", "parch", "fare", "embarked")]
+# 
+# str(train_1)
+# 
+# 
+# #모델링 (1) 의사결정나무(깊이를 최대 5개까지, 최소 관측치는 15개 이상)
+# install.packages("rpart")
+# 
+# library(rpart)
+# library(rpart.plot)
+# 
+# dt.model <- rpart(survived~., method="class", data=train_1, control = rpart.control(maxdepth=5, minsplit=15))
+# 
+# dt.model
+# 
+# prp(dt.model,type=4,extra = 2)
+# 
+# pred<-predict(dt.model,test_1[,-2],type="prob")
+# write.csv(pred,"decisionTree predict.csv")
+# 
+# pred<-predict(dt.model,test_1[,-2],type="class")
+# table(pred,test_1[,2])
+# 
+# #모델링 (2) 랜덤 포레스트
+# install.packages("randomForest")
+# library(randomForest)
+# 
+# rf.model<-randomForest(survived~., data=train_1)
+# print(rf.model)
+# 
+# pred<-predict(rf.model,test_1[,-2],type="prob")
+# 
+# write.csv(pred,"randomForest predict.csv")
+# 
+# pred<-predict(rf.model,test_1[,-2],type="class")
+# table(pred,test_1[,2])
+# 
+# #모델링 (3) 로지스틱 회귀분석
+# 
+# lg.model<-step(glm(survived~1, data=train_1, family="binomial"),direction="both",
+#                scope=list(lower=~1, upper=~pclass+sex+sibsp+parch+fare+embarked))
+# 
+# summary(lg.model)
+# 
+# pred<-predict(lg.model,test_1[,-2],type="response")
+# pred1<-as.data.frame(pred)
+# 
+# pred1$survived<-ifelse(pred1$pred<=0.5,pred1$survived<-"dead",pred1$survived<-"survived")
+# 
+# write.csv(pred1,"logistic regression predict.csv")
+# 
+# table(pred1$survived,test_1[,2])
+# 
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q3) 생성된 3개의 분류모델에 대해 성과분석을 실시하여 정확도를 비교하여 설명하시오. 
+# #     또, ROC curve를 그리고 AUC값을 산출하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #성과분석 - (1) 의사결정나무
+# install.packages(c("caret","ROCR"))
+# library(caret)
+# library(ROCR)
+# 
+# pred.dt<-predict(dt.model,test_1[,-2],type="class")
+# table(pred.dt,test_1[,2])
+# prop.table(table(pred.dt == test_1[,2]))
+# confusionMatrix(data=pred.dt, reference=test_1[,2],positive="survived")
+# 
+# pred.dt.roc<-prediction(as.numeric(pred.dt),as.numeric(test_1[,2]))
+# plot(performance(pred.dt.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.dt.roc,"auc")@y.values
+# 
+# #성과분석 - (2) 랜덤 포레스트
+# 
+# pred.rf<-predict(rf.model,test_1[,-2],type="class")
+# table(pred.rf,test_1[,2])
+# prop.table(table(pred.rf == test_1[,2]))
+# confusionMatrix(data=pred.rf, reference=test_1[,2],positive="survived")
+# 
+# pred.rf.roc<-prediction(as.numeric(pred.rf),as.numeric(test_1[,2]))
+# plot(performance(pred.rf.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.rf.roc,"auc")@y.values
+# 
+# #성과분석 - (3) 로지스틱 회귀분석
+# 
+# pred.lg<-predict(lg.model,test_1[,-2],type="response")
+# pred.lg<-as.data.frame(pred.lg)
+# 
+# pred.lg$survived<-ifelse(pred.lg$pred<=0.5,pred.lg$survived<-"dead",pred.lg$survived<-"survived")
+# table(pred.lg$survived,test_1[,2])
+# prop.table(table(pred.lg$survived == test_1[,2]))
+# confusionMatrix(data=as.factor(pred.lg$survived), reference=test_1[,2], positive="survived")
+# 
+# pred.lg$survived<-as.factor(pred.lg$survived)
+# 
+# pred.lg.roc<-prediction(as.numeric(pred.lg$survived),as.numeric(test_1[,2]))
+# plot(performance(pred.lg.roc,"tpr","fpr"))
+# abline(a=0,b=1,lty=2,col="black")
+# performance(pred.lg.roc,"auc")@y.values
+# 
+# 
+# 
+# 
+# ###################################################################################
+# #                      3. 비정형 데이터마이닝 (사용 데이터 : 문재인대통령 취임사)
+# ###################################################################################
+# 
+# # 1) ‘연설문.txt’ 데이터를 읽어온 뒤 숫자, 특수 문자 등을 제거하는 전처리 작업을 시행하시오.
+# 
+# install.packages(c("KoNLP","wordcloud","plyr", "rJava", "tm", "dplyr"))
+# install.packages()
+# install.packages()
+# library(tm)
+# library(rJava)
+# library(KoNLP)
+# library(wordcloud)
+# library(plyr)
+# library(dplyr)
+# 
+# useSejongDic()
+# 
+# moon<-readLines("연설문.txt")
+# moon
+# 
+# #데이터 전처리
+# clean_txt<-function(txt){
+#   txt<-tolower(txt)             # 대, 소문자 변환
+#   txt<-removePunctuation(txt)   # 구두점 제거
+#   txt<-removeNumbers(txt)       # 숫자 제거
+#   txt<-stripWhitespace(txt)     # 공백제거
+#   
+#   return(txt)
+# }
+# moon_1<-clean_txt(moon)
+# 
+# moon_1
+# 
+# # 2) 전처리된 데이터에서 명사를 추출하고 명사의 출현빈도를 10위까지 추출하여 막대그래프로 시각화하시오.
+# 
+# moon_1<-clean_txt(moon)
+# 
+# noun<-extractNoun(moon_1)                   #명사 추출
+# wordcount<-table(unlist(noun))              
+# cnoun<-as.data.frame(wordcount, stringsAsFactors = F)
+# 
+# table.cnoun<-cnoun[nchar(cnoun$Var1)>=2,]   #단어 길이가 2 이상만 추출
+# 
+# top_10<-table.cnoun %>% arrange(-Freq) %>% head(10)
+# 
+# barplot(top_10$Freq,names=top_10$Var1, main="문재인 대통령 취임사 빈출 명사", 
+#        xlab="단어",
+#        ylab="빈도")
+# 
+# # 3) 전처리된 데이터를 이용해 워드클라우드를 작성하고 인사이트를 추출하시오.
+# 
+# result<-data.frame(sort(table(noun_1),decreasing=T))
+# 
+# t<-wordcloud(result$noun_1,result$Freq,color=brewer.pal(6,"Dark2"),min.freq=2)
+# 
+# 
+# 
+# ###################################################################################
+# #                  1. 정형 데이터마이닝 (사용 데이터 : lotto)                  
+# ###################################################################################
+# 
+# 
+# #---------------------------------------------------------------------------------
+# # Q1) 연관규칙분석을 수행하기 위해 lotto 데이터셋을 transaction 데이터로 변환하시오. 
+# #     단, 본 분석에서 로또번호가 추첨된 순서는 고려하지 않고 분석을 수행하도록 한다. 
+# #     그리고 변환된 데이터에서 가장 많이 등장한 
+# #     상위 10개의 로또번호를 막대그래프로 출력하고 이에 대해 설명하시오.  
+# #---------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #작업 디렉토리 설정
+# setwd("C:/ADP/data")
+# 
+# #데이터 불러오기
+# lot<-read.csv("lotto.csv")
+# str(lot)
+# 
+# #na값이 존재하는지 확인
+# sum(is.na(lot))
+# 
+# 
+# ##트랜잭션 데이터로 변환
+# #데이터형태 변형을 위한 패키지 설치 및 로드
+# install.packages("reshape2")
+# library(reshape2)
+# 
+# #melt함수를 이용하여 데이터 변환
+# lot_melt <- melt(lot, id.vars=1) 
+# lot_melt2<-lot_melt[,-2]         
+# str(lot_melt2)                   
+# 
+# #트랜잭션 데이터 생성을 위한 패키지 설치 및 로드
+# install.packages("arules")
+# library(arules)
+# 
+# 
+# #lot_melt2 데이터를 transaction Data로 변환
+# lot_sp<-split(lot_melt2$value, lot_melt2$time_id)  
+# lot_ts<-as(lot_sp, "transactions")                 
+# 
+# #트랜잭션 데이터 출력
+# inspect(lot_ts[1:5])  
+# 
+# #최다 등장 로또추첨번호 TOP 10을 확인한 후 막대그래프로 시각화하기
+# itemFrequencyPlot(lot_ts,topN=10,type="absolute") #도수를 기준으로 막대그래프 생성
+# itemFrequencyPlot(lot_ts,topN=10)                 #상대도수(비율)를 기준으로 막대그래프 생성
+# 
+# 
+# #-------------------------------------------------------------------------------------
+# # Q2) 변환한 데이터에 대해 apriori함수를 사용하여 다음 괄호 안의 조건을 반영하여 
+# #     연관규칙을 생성하고, 이를 ‘rules_1’이라는 변수에 저장하여 결과를 해석하시오. 
+# #     (최소 지지도 : 0.002, 최소 신뢰도 : 0.8, 최소조합 항목 수 : 2개, 최대조합 항목 수 : 5개) 
+# #     그리고 도출된 연관규칙들을 향상도를 기준으로 내림차순 정렬하여 상위 30개의 규칙을 확인하고, 
+# #     이를 데이터프레임으로 변환하여 csv파일로 출력하시오.  
+# #-------------------------------------------------------------------------------------
+# 
+# 
+# ## < Solution >
+# 
+# #규칙 생성
+# #최소 지지도, 신뢰도, 조합 항목수에 대한 조건을 리스트형태로 저장
+# metric.params <- list(supp=0.002, conf=0.8, minlen=2, maxlen=5)       
+# rules_1 <- apriori(lot_ts, parameter = metric.params)
+# inspect(rules_1[1:20])
+# 
+# 
+# #향상도인 "lift"기준으로 내림차순 정렬했을 때 상위 30개의 규칙 확인
+# rules_2 <- sort(rules_1, by="lift", decreasing=TRUE) 
+# inspect(rules_2[1:30])                               
+# 
+# #위 30개의 규칙들을 데이터프레임으로 변환
+# rules_3<-inspect(rules_2[1:30])  
+# rules_4<-as(rules_3, "data.frame")
+# str(rules_4)
+# 
+# 
+# #변환된 데이터프레임을 csv파일로 저장
+# write.csv(rules_4,file="C:/ADP/data/lotto_rules.csv",row.names=FALSE)
+# 
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q3) 생성된 연관규칙 'rules_1'에 대한 정보를 해석하고, 1)번 문제를 통해 확인했을 때 
+# #     가장 많이 추첨된 번호가 우측항에 존재하는 규칙들만을 ‘rules_most_freq’라는 변수에 저장하시오. 
+# #     그리고 해당 규칙들을 해석하여 인사이트를 도출한 후 서술하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# ## < Solution >
+# 
+# #summary함수를 이용하여 생성된 규칙들에 관한 정보를 해석
+# summary(rules_1)
+# 
+# #로또 데이터에서 가장 많이 등장한 추첨번호 '34'가 우측항에 존재하는 규칙들만을 추출하여 저장
+# rules_most_freq<-subset(rules_1, rhs %in% "34")
+# 
+# #해당 규칙 확인
+# inspect(rules_most_freq)
+# 
+# 
+# ###################################################################################
+# #                      2. 통계분석 (사용 데이터 : )                  
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------------------
+# # Q1) FIFA데이터에서 각 선수의 키는 Heghit변수에 피트와 인치로 입력되어 있습니다. 
+# #      이를 cm로 변환하여 새로운 변수 Height_cm을 생성하시오. 
+# #      ( “ ' ” 앞의 숫자는 피트이며, “ ' ” 뒤의 숫자는 인치, 1피트 = 30cm, 1인치 = 2.5cm)
+# #---------------------------------------------------------------------------------------
+# 
+# #fifa.csv 데이터를 R에서 읽어온 뒤, 데이터의 구조와 요약을 확인한다.
+# #작업 디렉토리 설정
+# setwd("C:/ADP/data")
+# 
+# #데이터 불러오기
+# fifa<-read.csv("FIFA.csv")
+# str(fifa)
+# head(fifa)
+# 
+# #na값이 존재하는지 확인
+# sum(is.na(fifa))
+# 
+# #Height 변수의 피트, 인치 단위로 저장된 키 값을 cm 단위의 값으로 변환하기
+# #원활한 연산을 위해 Height 변수를 문자형으로 변환
+# fifa$Height<-as.character(fifa$Height)
+#  
+# as.numeric(substr(fifa$Height,1,regexpr("'", fifa$Height)-1)) * 30 + 
+# + as.numeric(substr(fifa$Height,regexpr("'", fifa$Height)+1, nchar(fifa$Height))) * 2.5
+# 
+# #단위를 변환한 값을 Height_cm 변수에 저장
+# fifa$Height_cm <- as.numeric(substr(fifa$Height,1,regexpr("'", fifa$Height)-1)) * 30 + 
+# +                   as.numeric(substr(fifa$Height,regexpr("'", fifa$Height)+1, nchar(fifa$Height))) * 2.5
+# 
+# 
+# #---------------------------------------------------------------------------------------
+# # Q2) 포지션을 의미하는 Position변수를 아래 표를 참고하여 “Forward”, “Midfielder”, 
+# #      “Defender”, “GoalKeeper”로 재범주화하고, factor형으로 변환하여 Position_Class 
+# #       라는 변수를 생성하고 저장하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# #선수의 포지션을 의미하는 Position변수를 문제에 주어진 조건에 맞게 재범주화하여 Position_Class 라는 변수에 저장
+# fifa<-within(fifa,
+#  {
+#  Position_Class=character(0)
+#  Position_Class[ Position %in% c("LS", "ST", "RS", "LW", "LF", "CF", "RF", "RW") ]="Forward"
+#        Position_Class[ Position %in% c("LAM", "CAM", "RAM", "LM", "LCM", "CM", "RCM", "RM") ]="Midfielder"
+#        Position_Class[ Position %in% c("LWB", "LDM", "CDM", "RDM", "RWB", "LB", "LCB", "CB", "RCB", "RB") ]="Defender"
+#        Position_Class[ Position == "GK" ]="GoalKeeper"
+#        })
+# 
+# 
+# # Position_Class변수를 팩터형(factor)으로 변환
+# fifa$Position_Class<-factor(fifa$Position_Class, levels=c("Forward", "Midfielder", "Defender", "GoalKeeper"),
+#                       labels=c("Forward", "Midfielder", "Defender", "GoalKeeper"))
+# str(fifa)
+# 
+# #---------------------------------------------------------------------------------------
+# # Q3) 새로 생성한 Position_Class 변수의 각 범주에 따른 Value(선수의 시장가치)의 
+# #      평균값의 차이를 비교하는 일원배치 분산분석을 수행하고 결과를 해석하시오. 
+# #      그리고 평균값의 차이가 통계적으로 유의하다면 사후검정을 수행하고 설명하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# # 분산분석 수행
+# fifa_result<-aov(Value~Position_Class, data=fifa) 
+# summary(fifa_result)                              
+# 
+# TukeyHSD(aov(Value~Position_Class, data=fifa))
+# 
+# #---------------------------------------------------------------------------------------
+# # Q4) Preferred Foot(주로 사용하는 발)과 Position_Class(재범주화 된 포지션)변수에 
+# #      따라 Value(이적료)의 차이가 있는지를 알아보기 위해 이원배치분산분석을 
+# #      수행하고 결과를 해석하시오.
+# #---------------------------------------------------------------------------------------
+# 
+# # 이원배치 분산분석 수행
+# fifa_twoway_anova <- aov(Value ~ Preferred_Foot + Position_Class + 
+#                            Preferred_Foot:Position_Class, data=fifa)
+# summary(fifa_twoway_anova)
+# 
+# #---------------------------------------------------------------------------------------
+# # Q5)Age, Overall, Wage, Height_cm, Weight_lb 가 Value에 영향을 미치는지 
+# #     알아보는 회귀분석을 단계적 선택법을 사용하여 수행하고 결과를 해석하시오. 
+# #---------------------------------------------------------------------------------------
+# 
+# #단계선택법을 통한 변수선택 수행
+# step(lm(Value~1, data=fifa), scope=list(lower=~1, 
+#       upper=~Age + Overall + Wage + Height_cm + Weight_lb), direction="both")
+# 
+# #변수선택을 통해 도출된 회귀모형
+# fifa.lm <- lm(Value ~ Wage + Overall + Age + Height_cm, data = fifa)
+# summary(fifa.lm)
+# 
+# ###################################################################################
+# #                      3. 비정형 데이터마이닝 (사용 데이터 : "영화 review")
+# ###################################################################################
+# 
+# #---------------------------------------------------------------------------
+# # Q1) ‘영화 기생충_review.txt’ 데이터를 읽어온 뒤 숫자, 특수 문자 등을 
+# #     제거하는 전처리 작업을 시행하시오. 그리고 ‘영화 기생충_review.txt’을 사전에 등록하라.
+# #---------------------------------------------------------------------------
+# install.packages(c("KoNLP","wordcloud"))
+# install.packages("rJava")
+# install.packages("tm")
+# install.packages("plyr")
+# library(tm)
+# library(rJava)
+# library(KoNLP)
+# library(wordcloud)
+# library(plyr)
+# library(stringr)
+# 
+# useSejongDic()
+# 
+# movie<-readLines("영화 기생충_review.txt")
+# dic<-readLines("영화 기생충_사전.txt")
+# 
+# buildDictionary(ext_dic = "woorimalsam", user_dic=data.frame(readLines("영화 기생충_사전.txt"),"ncn"),replace_usr_dic = T)
+# 
+# movie[1:10]
+# 
+# clean_txt<-function(txt){
+#   txt<-tolower(txt)             # 대, 소문자 변환
+#   txt<-removePunctuation(txt)   # 구두점 제거
+#   txt<-removeNumbers(txt)       # 숫자 제거
+#   txt<-stripWhitespace(txt)     # 공백제거
+#   
+#   return(txt)
+# }
+# 
+# movie_clean<-clean_txt(movie)
+# 
+# movie_clean[1:10]
+# 
+# #---------------------------------------------------------------------------
+# # Q2) ‘영화 기생충_사전.txt’를 단어 사전으로 하는 TDM을 구축하고 빈도를 파악하고 시각화하라.
+# #---------------------------------------------------------------------------
+# 
+# b<-VCorpus(VectorSource(movie))
+# 
+# clean_corpus <- function(corpus){
+#   corpus <- tm_map(corpus, stripWhitespace)
+#   corpus <- tm_map(corpus, removePunctuation)
+#   corpus <- tm_map(corpus, removeNumbers)
+#   corpus <- tm_map(corpus, content_transformer(tolower))
+#   return(corpus)
+# }
+# 
+# c<-clean_corpus(b)
+# 
+# dtm<-TermDocumentMatrix(c,control=list(dictionary=dic))
+# 
+# m <- as.matrix(dtm)
+# v <- sort(rowSums(m),decreasing=TRUE) 
+# d <- data.frame(word = names(v),freq=v)
+# head(d, 12)
+# 
+# #시각화
+# colors<-rainbow(nrow(d))
+# 
+# barplot(v[1:10], main="기생충 review 빈출 명사",col=colors)
+# legend("right",names(v[1:10]),fill=colors)
+# 
+# #---------------------------------------------------------------------------
+# # Q3) extraNoun으로 명사를 추출하여 워드클라우드를 그리고 특성을 파악하시오.
+# #---------------------------------------------------------------------------
+# 
+# #명사 추출
+# movie_exN<-sapply(movie_clean,extractNoun)
+# Noun<-as.vector(unlist(movie_exN))
+# Noun_2<-Noun[nchar(Noun)>=2]
+# 
+# #워드클라우드 시각화
+# result<-data.frame(sort(table(Noun_2),decreasing=T))
+# t<-wordcloud(result$Noun_2,result$Freq,color=brewer.pal(8,"Dark2"),min.freq=30)
+
+
+```
+
+
+
+
+
